@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRモデル対照</title>
+<style>
+  :root { --bg:#f4f3f0; --panel:#fff; --text:#222; --muted:#777; --line:#ddd;
+          --main:#2f6fd6; --wari:#d63b3b; --ruby:#9b3bd6; --head:#1f9d55; --pillar:#888; --folio:#e08a1e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "PingFang SC", "Hiragino Sans", sans-serif; background:var(--bg); color:var(--text); }
+  header { position:sticky; top:0; z-index:10; background:var(--panel); border-bottom:1px solid var(--line);
+           padding:8px 12px; display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; font-size:14px; }
+  header select, header input, header button { font-size:14px; padding:3px 6px; }
+  header input[type=number] { width:80px; }
+  .legend span { display:inline-flex; align-items:center; gap:4px; margin-right:8px; cursor:pointer; user-select:none; }
+  .legend i { width:12px; height:12px; display:inline-block; border-radius:2px; }
+  .legend .off { opacity:.3; text-decoration:line-through; }
+  .hint { color:var(--muted); font-size:12px; }
+  main { display:flex; gap:12px; padding:12px; align-items:flex-start; }
+  .col { flex:1; min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px; }
+  .col h2 { margin:0 0 6px; font-size:15px; display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  .col h2 small { font-weight:normal; color:var(--muted); }
+  .stage { position:relative; width:100%; }
+  .stage img { width:100%; display:block; }
+  .stage svg { position:absolute; inset:0; width:100%; height:100%; }
+  rect { fill-opacity:0; stroke-width:1.5; vector-effect:non-scaling-stroke; }
+  rect.u { stroke-width:4; fill-opacity:.18; }
+  rect.seg { fill-opacity:.32; stroke-width:1; }
+  body.tagmode .diffopt { display:none; }
+  body.only-diff rect:not(.u) { display:none; }
+  .loading { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <label>資料 <select id="ds"></select></label>
+  <label>色分け <select id="mode"><option value="tag">山田タグ</option><option value="ocr">OCRの種別</option></select></label>
+  <button id="prev">◀ 前の頁</button>
+  <label>頁 <input id="pg" type="number" min="1"></label>
+  <button id="next">次の頁 ▶</button>
+  <label>差の大きい頁 <select id="hot"></select></label>
+  <label class="diffopt"><input id="diff" type="checkbox"> 差分の枠のみ表示</label>
+  <label>拡大 <input id="zoom" type="range" min="40" max="160" value="100"></label>
+  <span class="legend" id="legend"></span>
+  <span class="hint">「OCRの種別」では太枠＝もう一方のモデルに対応する枠がない箇所 · 領域にカーソルを合わせると文字を表示 · ← → キーで頁移動 · 凡例をクリックで表示切替</span>
+</header>
+<main id="main"><div class="loading">読み込み中…</div></main>
+<script src="index_data.js"></script>
+<script>
+const TYPES = [['main','本文'],['wari','割注'],['ruby','ルビ'],['head','頭注'],['pillar','柱'],['folio','ノンブル']];
+const hidden = new Set(['pillar','folio']);
+// 山田タグの色（以前のラベル付けツールの配色を踏襲）
+const TAGS = [['A','部名','#e85a9b'],['B','門名','#8e44ad'],['C','項名','#3b4cc0'],['G','概説','#2f80ed'],
+  ['V','引用書名','#16a2a2'],['N','編目(V)','#0b6e6e'],['H','資料本文(V)','#7fb3e6'],
+  ['W','参考資料名','#f39c12'],['M','編目(W)','#b9770e'],['X','資料本文(W)','#f5c27a'],['*','割注 <wari>','#e03131']];
+const TAGC = Object.fromEntries(TAGS.map(t => [t[0], t[2]]));
+const TAGN = Object.fromEntries(TAGS.map(t => [t[0], t[1]]));
+const hiddenTag = new Set();
+let mode = 'tag';
+let D = null, page = 1;
+const $ = id => document.getElementById(id);
+const css = getComputedStyle(document.documentElement);
+
+function legend() {
+  if (mode === 'tag') {
+    $('legend').innerHTML = TAGS.map(([k,n,c]) =>
+      `<span data-k="${k}" class="${hiddenTag.has(k)?'off':''}"><i style="background:${c}"></i>${k==='*'?'':k+' '}${n}</span>`).join('');
+    $('legend').querySelectorAll('span').forEach(s => s.onclick = () => {
+      const k = s.dataset.k; hiddenTag.has(k) ? hiddenTag.delete(k) : hiddenTag.add(k); legend(); render(); });
+    return;
+  }
+  $('legend').innerHTML = TYPES.map(([k,n]) =>
+    `<span data-k="${k}" class="${hidden.has(k)?'off':''}"><i style="background:${css.getPropertyValue('--'+k)}"></i>${n}</span>`).join('');
+  $('legend').querySelectorAll('span').forEach(s => s.onclick = () => {
+    const k = s.dataset.k; hidden.has(k) ? hidden.delete(k) : hidden.add(k); legend(); render(); });
+}
+
+function loadDataset(id) {
+  $('main').innerHTML = '<div class="loading">読み込み中…</div>';
+  const go = () => { D = window.DATA[id]; setupHot(); page = D.pages.includes(page) ? page : D.pages[0]; render(); };
+  if (window.DATA && window.DATA[id]) return go();
+  const s = document.createElement('script'); s.src = `data_${id}.js`; s.onload = go;
+  s.onerror = () => $('main').innerHTML = '<div class="loading">データの読み込みに失敗しました</div>';
+  document.body.appendChild(s);
+}
+
+function setupHot() {
+  const [a, b] = D.models;
+  const list = D.pages.map(n => [n, D.diff[n]]).sort((x, y) => y[1].u - x[1].u).slice(0, 300);
+  $('hot').innerHTML = '<option value="">—</option>' + list.map(([n, d]) =>
+    `<option value="${n}">p.${n}　割注 ${a} ${d.wa} → ${b} ${d.wb}　差分枠 ${d.u}</option>`).join('');
+}
+
+function imgUrl(n) {
+  return `https://iiif.nichibun.ac.jp/iipsrv/?IIIF=/KJZ/${D.iiif}/${D.iiif}_${String(n).padStart(4,'0')}.tif/full/1200,/0/default.jpg`;
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function panel(model) {
+  const p = D[model][page];
+  if (!p) return `<div class="col"><h2>${model}</h2><div class="loading">この頁のデータはありません</div></div>`;
+  const cnt = {}; let u = 0;
+  for (const b of p.b) { cnt[b[0]] = (cnt[b[0]]||0) + 1; if (b[6] && (b[0]==='wari'||b[0]==='main')) u++; }
+  let rects;
+  if (mode === 'tag') {
+    const out = [];
+    for (const b of p.b) {
+      if (!b[7] || !b[7].length) continue;
+      const vert = b[4] >= b[3];
+      for (const [t, a, c] of b[7]) {
+        const k = t.endsWith('*') ? '*' : t;
+        if (hiddenTag.has(k)) continue;
+        const col = TAGC[k] || '#999';
+        const txt = b[5].replace(/\s/g,'');
+        const part = txt.slice(Math.round(a*txt.length), Math.round(c*txt.length));
+        const [x, y, w, h] = vert ? [b[1], b[2] + a*b[4], b[3], (c-a)*b[4]] : [b[1] + a*b[3], b[2], (c-a)*b[3], b[4]];
+        out.push(`<rect class="seg" x="${x}" y="${y}" width="${w}" height="${h}" style="stroke:${col};fill:${col}"><title>${k==='*' ? '割注（'+(TAGN[t[0]]||t[0])+' 内）' : t+' '+(TAGN[k]||'')}：${esc(part)}</title></rect>`);
+      }
+    }
+    rects = out.join('');
+  } else rects = p.b.filter(b => !hidden.has(b[0])).map(b =>
+    `<rect class="${b[6]?'u':''}" x="${b[1]}" y="${b[2]}" width="${b[3]}" height="${b[4]}"
+       style="stroke:var(--${b[0]});fill:var(--${b[0]})"><title>${TYPES.find(t=>t[0]===b[0])[1]}：${esc(b[5])}</title></rect>`).join('');
+  return `<div class="col"><h2>${model}<small>割注 ${cnt.wari||0} · 本文 ${cnt.main||0} · ルビ ${cnt.ruby||0} · 差分枠 ${u}</small></h2>
+    <div class="stage"><img src="${imgUrl(page)}" alt="p.${page}" loading="lazy">
+    <svg viewBox="0 0 ${p.W} ${p.H}" preserveAspectRatio="none">${rects}</svg></div></div>`;
+}
+
+function render() {
+  if (!D) return;
+  $('pg').value = page; $('pg').max = D.pages[D.pages.length-1];
+  $('main').style.width = $('zoom').value + '%';
+  $('main').innerHTML = D.models.map(panel).join('');
+  try { localStorage.setItem('cmp_'+D.id, page); } catch (e) {}
+}
+
+function step(d) { const i = D.pages.indexOf(page); const j = Math.min(D.pages.length-1, Math.max(0, i+d)); page = D.pages[j]; render(); }
+
+$('ds').innerHTML = window.DATASETS.map(d => `<option value="${d.id}">${d.label}</option>`).join('');
+$('ds').onchange = () => { let s = null; try { s = +localStorage.getItem('cmp_'+$('ds').value); } catch (e) {} page = s || 1; loadDataset($('ds').value); };
+$('prev').onclick = () => step(-1); $('next').onclick = () => step(1);
+$('pg').onchange = () => { const n = +$('pg').value; if (D.pages.includes(n)) { page = n; render(); } };
+$('hot').onchange = () => { if ($('hot').value) { page = +$('hot').value; render(); } };
+$('mode').onchange = () => { mode = $('mode').value; document.body.classList.toggle('tagmode', mode === 'tag'); legend(); render(); };
+document.body.classList.add('tagmode');
+$('diff').onchange = () => document.body.classList.toggle('only-diff', $('diff').checked);
+$('zoom').oninput = () => { $('main').style.width = $('zoom').value + '%'; };
+document.addEventListener('keydown', e => { if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight') step(1); if (e.key === 'ArrowLeft') step(-1); });
+legend();
+let s0 = null; try { s0 = +localStorage.getItem('cmp_bung_1'); } catch (e) {}
+page = s0 || 1; loadDataset(window.DATASETS[0].id);
+</script>
+</body>
+</html>
