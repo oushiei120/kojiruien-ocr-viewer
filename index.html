@@ -232,8 +232,12 @@ $('zoom').oninput = () => { $('main').style.width = $('zoom').value + '%'; };
 document.addEventListener('keydown', e => { if (e.target.tagName === 'INPUT') return;
   if (e.key === 'ArrowRight') step(1); if (e.key === 'ArrowLeft') step(-1); });
 legend();
-let s0 = null; try { s0 = +localStorage.getItem('cmp_bung_1'); } catch (e) {}
-page = s0 || 1; loadDataset(window.DATASETS[0].id);
+// URL で資料と頁を指定できる：?ds=jinb_1&p=3
+const q = new URLSearchParams(location.search);
+const ds0 = window.DATASETS.some(d => d.id === q.get('ds')) ? q.get('ds') : window.DATASETS[0].id;
+let s0 = null; try { s0 = +localStorage.getItem('cmp_' + ds0); } catch (e) {}
+$('ds').value = ds0;
+page = +q.get('p') || s0 || 1; loadDataset(ds0);
 </script>
 </body>
 </html>
