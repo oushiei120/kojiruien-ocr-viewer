@@ -27,9 +27,20 @@
   rect { fill-opacity:0; stroke-width:1.5; vector-effect:non-scaling-stroke; }
   rect.u { stroke-width:4; fill-opacity:.18; }
   rect.seg { fill-opacity:.32; stroke-width:1; }
-  body.tagmode .diffopt { display:none; }
   body.only-diff rect:not(.u) { display:none; }
   .loading { padding:40px; text-align:center; color:var(--muted); }
+  #texts { display:flex; gap:12px; padding:0 12px 24px; align-items:flex-start; }
+  #texts .col h2 small mark { padding:0 3px; }
+  .yt { font-family:"Hiragino Mincho ProN","Yu Mincho",serif; font-size:15px; line-height:1.75;
+        white-space:pre-wrap; word-break:break-all; }
+  .yt .ln { padding:1px 0; border-bottom:1px dotted #eee; }
+  .yt .tg { display:inline-block; min-width:1.4em; margin-right:6px; padding:0 3px; border-radius:3px;
+            color:#fff; font:bold 12px/1.5 -apple-system,sans-serif; text-align:center; vertical-align:1px; }
+  .yt .tg.d { outline:3px solid #f5d100; }
+  .yt .w { color:#c92a2a; font-size:13px; }
+  .yt .mk { color:#bbb; font-size:10px; }
+  .yt mark { background:#ffe066; color:inherit; }
+  .yt .none { color:var(--muted); }
 </style>
 </head>
 <body>
@@ -43,9 +54,10 @@
   <label class="diffopt"><input id="diff" type="checkbox"> 差分の枠のみ表示</label>
   <label>拡大 <input id="zoom" type="range" min="40" max="160" value="100"></label>
   <span class="legend" id="legend"></span>
-  <span class="hint">「OCRの種別」では太枠＝もう一方のモデルに対応する枠がない箇所 · 領域にカーソルを合わせると文字を表示 · ← → キーで頁移動 · 凡例をクリックで表示切替</span>
+  <span class="hint">差分の枠＝もう一方のモデルに対応する枠がない箇所（「OCRの種別」では太枠） · 領域にカーソルを合わせると文字を表示 · ← → キーで頁移動 · 凡例をクリックで表示切替 · 下に山田形式の変換結果（黄色＝比較対象と異なる文字）</span>
 </header>
 <main id="main"><div class="loading">読み込み中…</div></main>
+<section id="texts"></section>
 <script src="index_data.js"></script>
 <script>
 const TYPES = [['main','本文'],['wari','割注'],['ruby','ルビ'],['head','頭注'],['pillar','柱'],['folio','ノンブル']];
@@ -116,7 +128,7 @@ function panel(model) {
         const txt = b[5].replace(/\s/g,'');
         const part = txt.slice(Math.round(a*txt.length), Math.round(c*txt.length));
         const [x, y, w, h] = vert ? [b[1], b[2] + a*b[4], b[3], (c-a)*b[4]] : [b[1] + a*b[3], b[2], (c-a)*b[3], b[4]];
-        out.push(`<rect class="seg" x="${x}" y="${y}" width="${w}" height="${h}" style="stroke:${col};fill:${col}"><title>${k==='*' ? '割注（'+(TAGN[t[0]]||t[0])+' 内）' : t+' '+(TAGN[k]||'')}：${esc(part)}</title></rect>`);
+        out.push(`<rect class="seg${b[6] ? ' u' : ''}" x="${x}" y="${y}" width="${w}" height="${h}" style="stroke:${col};fill:${col}"><title>${k==='*' ? '割注（'+(TAGN[t[0]]||t[0])+' 内）' : t+' '+(TAGN[k]||'')}：${esc(part)}</title></rect>`);
       }
     }
     rects = out.join('');
@@ -128,11 +140,82 @@ function panel(model) {
     <svg viewBox="0 0 ${p.W} ${p.H}" preserveAspectRatio="none">${rects}</svg></div></div>`;
 }
 
+// ---------- 山田形式テキストの対照（文字単位の差分）
+function tokens(lines) {
+  const out = [];
+  for (const l of lines) {
+    const m = l.match(/^([A-Z#])(?: (.*))?$/);
+    out.push({k: 'tag', v: m ? m[1] : ''});
+    for (const part of (m ? m[2] || '' : l).split(/(<[^>]+>)/)) {
+      if (!part) continue;
+      if (part[0] === '<') out.push({k: 'mk', v: part});
+      else for (const ch of part) out.push({k: 'ch', v: ch});
+    }
+    out.push({k: 'nl', v: '\n'});
+  }
+  return out;
+}
+const tkey = t => t.k === 'tag' ? '§' + t.v : t.v;
+
+// a の各トークンが b との最長共通部分列に入るか（入らない＝異なる箇所）
+function common(a, b) {
+  const n = a.length, m = b.length;
+  if (!m || n * m > 8e6) return null;
+  const W = m + 1, dp = new Uint16Array((n + 1) * W);
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i*W+j] = a[i] === b[j] ? dp[(i+1)*W+j+1] + 1 : Math.max(dp[(i+1)*W+j], dp[i*W+j+1]);
+  const ok = new Uint8Array(n);
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (a[i] === b[j]) { ok[i] = 1; i++; j++; }
+    else if (dp[(i+1)*W+j] >= dp[i*W+j+1]) i++; else j++;
+  }
+  return ok;
+}
+
+function yamadaHtml(lines, ref) {
+  if (!lines || !lines.length) return '<div class="none">この頁のテキストはありません</div>';
+  const tk = tokens(lines);
+  const ok = ref ? common(tk.map(tkey), tokens(ref).map(tkey)) : null;
+  let html = '<div class="ln">', inW = false, nd = 0;
+  tk.forEach((t, i) => {
+    const d = ok && !ok[i] && t.k !== 'nl';
+    if (d && t.k === 'ch') nd++;
+    if (t.k === 'tag') html += `<span class="tg${d ? ' d' : ''}" style="background:${TAGC[t.v] || '#999'}" title="${esc(TAGN[t.v] || '')}">${t.v || '·'}</span>`;
+    else if (t.k === 'nl') { if (inW) { html += '</span>'; inW = false; } html += '</div><div class="ln">'; }
+    else if (t.k === 'mk') {
+      if (t.v === '<wari>' && !inW) { html += '<span class="mk">&lt;wari&gt;</span><span class="w">'; inW = true; }
+      else if (t.v === '</wari>' && inW) { html += '</span><span class="mk">&lt;/wari&gt;</span>'; inW = false; }
+      else html += `<span class="mk">${esc(t.v)}</span>`;
+    } else html += d ? `<mark>${esc(t.v)}</mark>` : esc(t.v);
+  });
+  return { html: html.replace(/<div class="ln"><\/div>$/, '') + '</div>', nd };
+}
+
+function texts() {
+  const [a, b] = D.models;
+  const gt = D.gt ? D.gt[page] : null;
+  const cols = D.models.map(mdl => {
+    const lines = D.txt[mdl][page];
+    const ref = D.gt ? gt : D.txt[mdl === a ? b : a][page];
+    const r = yamadaHtml(lines, ref);
+    if (typeof r === 'string') return `<div class="col"><h2>${mdl}（山田形式）</h2><div class="yt">${r}</div></div>`;
+    const vs = D.gt ? '正解' : (mdl === a ? b : a);
+    return `<div class="col"><h2>${mdl}（山田形式）<small><mark>黄色</mark>＝${vs}と異なる文字 ${r.nd} 字</small></h2><div class="yt">${r.html}</div></div>`;
+  });
+  if (D.gt) {
+    const r = yamadaHtml(gt, null);
+    cols.push(`<div class="col"><h2>正解（山田データ）<small>ルビ・返り点は省略して表示</small></h2><div class="yt">${typeof r === 'string' ? r : r.html}</div></div>`);
+  }
+  $('texts').innerHTML = cols.join('');
+}
+
 function render() {
   if (!D) return;
   $('pg').value = page; $('pg').max = D.pages[D.pages.length-1];
   $('main').style.width = $('zoom').value + '%';
   $('main').innerHTML = D.models.map(panel).join('');
+  texts();
   try { localStorage.setItem('cmp_'+D.id, page); } catch (e) {}
 }
 
@@ -143,8 +226,7 @@ $('ds').onchange = () => { let s = null; try { s = +localStorage.getItem('cmp_'+
 $('prev').onclick = () => step(-1); $('next').onclick = () => step(1);
 $('pg').onchange = () => { const n = +$('pg').value; if (D.pages.includes(n)) { page = n; render(); } };
 $('hot').onchange = () => { if ($('hot').value) { page = +$('hot').value; render(); } };
-$('mode').onchange = () => { mode = $('mode').value; document.body.classList.toggle('tagmode', mode === 'tag'); legend(); render(); };
-document.body.classList.add('tagmode');
+$('mode').onchange = () => { mode = $('mode').value; legend(); render(); };
 $('diff').onchange = () => document.body.classList.toggle('only-diff', $('diff').checked);
 $('zoom').oninput = () => { $('main').style.width = $('zoom').value + '%'; };
 document.addEventListener('keydown', e => { if (e.target.tagName === 'INPUT') return;

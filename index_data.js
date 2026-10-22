@@ -1,1 +1,1 @@
-window.DATASETS = [{"id": "bung_1", "label": "文学部一（正解なし）"}, {"id": "jinb_1", "label": "人部一 P1–100（正解あり：割注F値 v5b 92.7 / v4 88.9）"}];
+window.DATASETS = [{"id": "bung_1", "label": "文学部一（正解なし）"}, {"id": "bung_2", "label": "文学部二（正解なし）"}, {"id": "jinb_1", "label": "人部一 P1–100（正解あり：割注F値 v5b 92.7 / v4 88.9）"}];
